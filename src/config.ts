@@ -1,3 +1,5 @@
+export type LogLevel = 'info' | 'warn' | 'error'
+
 export interface Config {
   port: number
   adminPassword: string
@@ -7,11 +9,15 @@ export interface Config {
     password: string
   }
   tenantsPath: string
-  logLevel: 'info' | 'warn' | 'error'
+  logLevel: LogLevel
 }
 
 const MIN_ADMIN_PASSWORD_LENGTH = 16
-const VALID_LOG_LEVELS = new Set(['info', 'warn', 'error'])
+const VALID_LOG_LEVELS: ReadonlySet<LogLevel> = new Set(['info', 'warn', 'error'])
+
+function isLogLevel(value: string): value is LogLevel {
+  return (VALID_LOG_LEVELS as ReadonlySet<string>).has(value)
+}
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const problems: string[] = []
@@ -44,12 +50,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
 
   const logLevelRaw = env['LOG_LEVEL'] ?? 'info'
-  if (!VALID_LOG_LEVELS.has(logLevelRaw)) {
+  if (!isLogLevel(logLevelRaw)) {
     problems.push(`LOG_LEVEL must be one of: info, warn, error (got '${logLevelRaw}')`)
   }
 
   if (problems.length > 0) {
     throw new Error(`sms-edge config errors:\n  - ${problems.join('\n  - ')}`)
+  }
+
+  // Re-narrow after the throw guard: every required var is defined here.
+  // The isLogLevel guard above narrowed logLevelRaw, but TS doesn't carry
+  // the narrowing past the throw boundary, so we re-check.
+  if (!isLogLevel(logLevelRaw)) {
+    throw new Error('unreachable: logLevel validated above')
   }
 
   return {
@@ -61,6 +74,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       password: smsgatePass!,
     },
     tenantsPath: env['TENANTS_PATH'] ?? '/data/tenants.json',
-    logLevel: logLevelRaw as Config['logLevel'],
+    logLevel: logLevelRaw,
   }
 }

@@ -41,11 +41,32 @@ describe('loadConfig', () => {
     ['PORT non-numeric', { ...minimalEnv, PORT: 'eighty' }, /PORT/],
     ['PORT out of range', { ...minimalEnv, PORT: '99999' }, /PORT/],
     ['LOG_LEVEL invalid', { ...minimalEnv, LOG_LEVEL: 'debug' }, /LOG_LEVEL/],
-  ])('throws on %s', (_label, env, pattern) => {
-    expect(() => loadConfig(env as NodeJS.ProcessEnv)).toThrow(pattern)
+  ])('throws on %s (exactly one problem reported)', (_label, env, pattern) => {
+    let caught: Error | undefined
+    try {
+      loadConfig(env as NodeJS.ProcessEnv)
+    } catch (e) {
+      caught = e as Error
+    }
+    expect(caught).toBeDefined()
+    expect(caught!.message).toMatch(pattern)
+    // Each single-var failure should produce exactly one bullet in the aggregated error.
+    const bullets = caught!.message.match(/\n  - /g) ?? []
+    expect(bullets).toHaveLength(1)
   })
 
-  it('error messages name every problem in one throw', () => {
-    expect(() => loadConfig({})).toThrow(/ADMIN_PASSWORD.*SMSGATE_USER.*SMSGATE_PASS.*SMSGATE_BASE_URL/s)
+  it('aggregates exactly the missing-var problems when env is empty (no spurious extras)', () => {
+    let caught: Error | undefined
+    try {
+      loadConfig({})
+    } catch (e) {
+      caught = e as Error
+    }
+    expect(caught).toBeDefined()
+    expect(caught!.message).toMatch(/ADMIN_PASSWORD.*SMSGATE_USER.*SMSGATE_PASS.*SMSGATE_BASE_URL/s)
+    // Empty env: ADMIN_PASSWORD + SMSGATE_USER + SMSGATE_PASS + SMSGATE_BASE_URL = 4 bullets.
+    // PORT is undefined (skipped) and LOG_LEVEL defaults to 'info' (valid), so neither contributes.
+    const bullets = caught!.message.match(/\n  - /g) ?? []
+    expect(bullets).toHaveLength(4)
   })
 })
