@@ -17,15 +17,15 @@ See `docs/superpowers/specs/2026-05-10-sms-edge-design.md` for the full design.
 2. In Coolify: create a new resource -> "Docker Compose" -> point at this repo. Coolify reads `docker-compose.yml` from the repo root.
 3. Add `ghcr.io` as a registry in Coolify's settings with a GitHub PAT (scope: `read:packages`). One-time per Coolify install.
 4. In the Coolify env-var UI, set the variables Coolify auto-detected from the compose file:
-   - `ADMIN_PASSWORD` (required) -- generate with `openssl rand -base64 24`.
+   - `ADMIN_PASSWORD` (required) -- generate with `openssl rand -base64 24`. The admin username is fixed to `admin` and is not configurable.
    - `SMSGATE_USER` (required) -- your SMSGate basic-auth username.
    - `SMSGATE_PASS` (required) -- your SMSGate basic-auth password.
-   - `SMSGATE_BASE_URL` (required, prefilled `https://sms.relentnet.dev`).
-   - `LOG_LEVEL` (required, prefilled `info`).
+   - `SMSGATE_BASE_URL` (optional, prefilled `https://sms.relentnet.dev`).
+   - `LOG_LEVEL` (optional, prefilled `info`).
    - `IMAGE_TAG` (optional) -- pin to a specific version, e.g. `v0.1.0`.
    - `SERVICE_FQDN_SMS-EDGE_3000` -- the domain Coolify will route to this service, e.g. `sms-edge.relentnet.dev`. Hyphen in the env-var name matches the service identifier.
 5. Deploy.
-6. Verify: `curl https://sms-edge.relentnet.dev/health` should return `{"ok":true,...}`.
+6. Verify: `curl https://sms-edge.relentnet.dev/health` should return `{"ok":true,"version":"0.1.0","tenants":0,"uptimeSec":N}`.
 7. Visit `https://sms-edge.relentnet.dev/admin`, log in as `admin` + `ADMIN_PASSWORD`, add your first tenant.
 8. Copy the one-time token shown after creating the tenant. (You cannot retrieve it later.)
 9. In Logto admin: configure the HTTP SMS connector with URL `https://sms-edge.relentnet.dev/sms` and header `X-Auth: <token>`.
@@ -67,6 +67,8 @@ pnpm dev
 
 The dev script runs `tsup --watch` + `node --watch --env-file=.env dist/index.js`. Changes to `src/` rebuild and restart automatically.
 
+Note: `.env.example` sets `TENANTS_PATH=./data/tenants.json` (host-relative) for local dev. Production containers use `/data/tenants.json` (the compose volume mount).
+
 ## Tests
 
 ```bash
@@ -99,7 +101,11 @@ Visit `/admin/tenants` -> Add tenant -> name it -> copy the one-time token.
 
 ### Rotate a token
 
-Delete the tenant in `/admin/tenants`, recreate it, update Logto with the new token.
+Delete the tenant in `/admin/tenants`, recreate it, update Logto with the new token. This causes a brief window of 401s on `/sms` for that tenant; schedule during a quiet period.
+
+### Upgrade
+
+Bump `IMAGE_TAG` to the new version (Coolify env-var UI) and re-deploy. On a generic Docker host: `docker compose pull && docker compose up -d`. Graceful shutdown drains in-flight requests up to 10 seconds before the new container takes over.
 
 ### Backup tenants
 
