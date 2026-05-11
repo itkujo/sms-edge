@@ -10,7 +10,7 @@ importers:
     dependencies:
       '@itkujo/sms-core':
         specifier: github:itkujo/sms-core#v0.1.0
-        version: git+https://git@github.com:itkujo/sms-core.git#b0a8d179fa0b7255aaaac4135df642c88c477b41
+        version: https://codeload.github.com/itkujo/sms-core/tar.gz/b0a8d179fa0b7255aaaac4135df642c88c477b41
     devDependencies:
       '@types/node':
         specifier: ^20.11.0
@@ -321,8 +321,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@itkujo/sms-core@git+https://git@github.com:itkujo/sms-core.git#b0a8d179fa0b7255aaaac4135df642c88c477b41':
-    resolution: {commit: b0a8d179fa0b7255aaaac4135df642c88c477b41, repo: git@github.com:itkujo/sms-core.git, type: git}
+  '@itkujo/sms-core@https://codeload.github.com/itkujo/sms-core/tar.gz/b0a8d179fa0b7255aaaac4135df642c88c477b41':
+    resolution: {tarball: https://codeload.github.com/itkujo/sms-core/tar.gz/b0a8d179fa0b7255aaaac4135df642c88c477b41}
     version: 0.1.0
     engines: {node: '>=18.17'}
 
@@ -1101,7 +1101,7 @@ snapshots:
   '@esbuild/win32-x64@0.27.7':
     optional: true
 
-  '@itkujo/sms-core@git+https://git@github.com:itkujo/sms-core.git#b0a8d179fa0b7255aaaac4135df642c88c477b41': {}
+  '@itkujo/sms-core@https://codeload.github.com/itkujo/sms-core/tar.gz/b0a8d179fa0b7255aaaac4135df642c88c477b41': {}
 
   '@jest/schemas@29.6.3':
     dependencies:
