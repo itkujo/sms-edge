@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { randomBytes } from 'node:crypto'
 import { hashToken, verifyToken } from './hash.js'
 
 describe('hashToken / verifyToken', () => {
@@ -36,6 +37,18 @@ describe('hashToken / verifyToken', () => {
 
   it('returns false on unknown algorithm prefix', async () => {
     expect(await verifyToken('any', 'argon2$N=16$salt$key')).toBe(false)
+  })
+
+  // Pins the downgrade-prevention property: a structurally well-formed
+  // hash (algo=scrypt, correct salt + key byte lengths, valid base64) but
+  // with a different params string must be rejected before any scrypt
+  // call is made. Uses random bytes for salt + key since the params-string
+  // check fires before the cryptographic comparison.
+  it('returns false on structurally-valid hash with different scrypt params', async () => {
+    const salt = randomBytes(16)
+    const fakeKey = randomBytes(64)
+    const stored = `scrypt$N=32768,r=8,p=1$${salt.toString('base64')}$${fakeKey.toString('base64')}`
+    expect(await verifyToken('any-token', stored)).toBe(false)
   })
 
   it('handles unicode tokens (defensive, though we generate ASCII)', async () => {
