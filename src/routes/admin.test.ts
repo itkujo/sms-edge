@@ -165,6 +165,38 @@ describe('POST /admin/tenants', () => {
     }, deps)
     expect(res.status).toBe(403)
   })
+
+  it('trims leading and trailing whitespace from the tenant name', async () => {
+    const csrf = await getCsrf()
+    const res = await handleAdmin({
+      method: 'POST', path: '/admin/tenants',
+      headers: { authorization: AUTH_HEADER, 'content-type': 'application/x-www-form-urlencoded' },
+      body: `name=${encodeURIComponent('  acme  ')}&csrf=${encodeURIComponent(csrf)}`,
+    }, deps)
+    expect(res.status).toBe(200)
+    const list = await store.list()
+    expect(list[0]?.name).toBe('acme') // trimmed, no leading/trailing spaces
+  })
+
+  it('maps a concurrent-duplicate race to the same 400 page', async () => {
+    // Both requests pass the pre-check (existing.some -> false), then race on
+    // store.add. The first wins; the second sees the store throw and must be
+    // mapped to a 400 by postCreate, NOT propagate as an uncaught 500.
+    const csrf = await getCsrf()
+    const submit = () =>
+      handleAdmin({
+        method: 'POST', path: '/admin/tenants',
+        headers: { authorization: AUTH_HEADER, 'content-type': 'application/x-www-form-urlencoded' },
+        body: `name=acme&csrf=${encodeURIComponent(csrf)}`,
+      }, deps)
+    const [a, b] = await Promise.all([submit(), submit()])
+    const statuses = [a.status, b.status].sort()
+    expect(statuses).toEqual([200, 400])
+    const loser = a.status === 400 ? a : b
+    expect(loser.body).toMatch(/already exists/)
+    // Exactly one tenant landed.
+    expect(await store.list()).toHaveLength(1)
+  })
 })
 
 describe('POST /admin/tenants/:name/delete', () => {

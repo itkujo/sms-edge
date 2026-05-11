@@ -2,11 +2,16 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { hashToken } from '../tenants/hash.js'
 import type { Tenant, TenantStore } from '../tenants/store.js'
 
+/** Dependencies for the admin route. */
 export interface AdminRouteDeps {
   store: TenantStore
   adminPassword: string
 }
 
+/** Input shape for `handleAdmin`. Body is the decoded UTF-8 form body, or
+ * null for GET requests. Headers are passed in as-received from the HTTP
+ * layer (case preserved); lookup is case-insensitive. Caller (Task 9) MUST
+ * cap body size before passing it here -- this module does not enforce a limit. */
 export interface AdminRouteRequest {
   method: string
   path: string
@@ -14,6 +19,7 @@ export interface AdminRouteRequest {
   body: string | null
 }
 
+/** Output shape: status, headers (case preserved for emission), serialized body. */
 export interface AdminRouteResponse {
   status: number
   headers: Record<string, string>
@@ -21,7 +27,12 @@ export interface AdminRouteResponse {
 }
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]*$/
+const DELETE_PATH_RE = /^\/admin\/tenants\/([^/]+)\/delete$/
 
+/** Routes admin requests after a basic-auth gate. Every successful request
+ * gets a CSRF token derived from the auth header; POSTs must echo it back
+ * in a hidden form field. HTML is server-rendered with inline CSS, no JS
+ * framework, no client-side state. */
 export async function handleAdmin(req: AdminRouteRequest, deps: AdminRouteDeps): Promise<AdminRouteResponse> {
   const authHeader = headerCI(req.headers, 'authorization')
   if (!authHeader) return authChallenge()
@@ -38,11 +49,11 @@ export async function handleAdmin(req: AdminRouteRequest, deps: AdminRouteDeps):
     return htmlResponse(200, renderTenantsPage(tenants, csrfToken))
   }
   if (req.method === 'POST' && req.path === '/admin/tenants') {
-    return await postCreate(req, deps, csrfToken)
+    return await postCreate(req, deps, authHeader)
   }
-  const deleteMatch = req.method === 'POST' && /^\/admin\/tenants\/([^/]+)\/delete$/.exec(req.path)
+  const deleteMatch = req.method === 'POST' && DELETE_PATH_RE.exec(req.path)
   if (deleteMatch) {
-    return await postDelete(req, deps, csrfToken, decodeURIComponent(deleteMatch[1]!))
+    return await postDelete(req, deps, authHeader, decodeURIComponent(deleteMatch[1]!))
   }
   if (req.path.startsWith('/admin')) {
     return htmlResponse(404, `<h1>Not found</h1><p>No admin route at <code>${escapeHtml(req.path)}</code>.</p>`)
@@ -116,9 +127,9 @@ function parseForm(body: string | null): Record<string, string> {
   return out
 }
 
-async function postCreate(req: AdminRouteRequest, deps: AdminRouteDeps, csrfToken: string): Promise<AdminRouteResponse> {
+async function postCreate(req: AdminRouteRequest, deps: AdminRouteDeps, authHeader: string): Promise<AdminRouteResponse> {
   const fields = parseForm(req.body)
-  if (!verifyCsrf(deps.adminPassword, headerCI(req.headers, 'authorization')!, fields['csrf'])) {
+  if (!verifyCsrf(deps.adminPassword, authHeader, fields['csrf'])) {
     return htmlResponse(403, '<h1>CSRF check failed</h1>')
   }
   const name = (fields['name'] ?? '').trim()
@@ -126,19 +137,28 @@ async function postCreate(req: AdminRouteRequest, deps: AdminRouteDeps, csrfToke
   if (!validation.ok) {
     return htmlResponse(400, `<h1>Invalid name</h1><p>${escapeHtml(validation.reason)}</p>`)
   }
+  // Pre-check is a UX optimization; the store is the source of truth (race-safe).
   const existing = await deps.store.list()
   if (existing.some((t) => t.name === name)) {
     return htmlResponse(400, `<h1>Conflict</h1><p>tenant '${escapeHtml(name)}' already exists.</p>`)
   }
   const plaintextToken = randomBytes(32).toString('base64url')
   const hash = await hashToken(plaintextToken)
-  await deps.store.add(name, hash)
-  return htmlResponse(200, renderCreatedPage(name, plaintextToken, csrfToken))
+  try {
+    await deps.store.add(name, hash)
+  } catch (err) {
+    // Concurrent create raced us; surface the same 400 we would have on a clean duplicate.
+    if (err instanceof Error && /already exists/.test(err.message)) {
+      return htmlResponse(400, `<h1>Conflict</h1><p>tenant '${escapeHtml(name)}' already exists.</p>`)
+    }
+    throw err
+  }
+  return htmlResponse(200, renderCreatedPage(name, plaintextToken))
 }
 
-async function postDelete(req: AdminRouteRequest, deps: AdminRouteDeps, _csrfToken: string, name: string): Promise<AdminRouteResponse> {
+async function postDelete(req: AdminRouteRequest, deps: AdminRouteDeps, authHeader: string, name: string): Promise<AdminRouteResponse> {
   const fields = parseForm(req.body)
-  if (!verifyCsrf(deps.adminPassword, headerCI(req.headers, 'authorization')!, fields['csrf'])) {
+  if (!verifyCsrf(deps.adminPassword, authHeader, fields['csrf'])) {
     return htmlResponse(403, '<h1>CSRF check failed</h1>')
   }
   const removed = await deps.store.remove(name)
@@ -220,7 +240,7 @@ function renderTenantsPage(tenants: readonly Readonly<Tenant>[], csrfToken: stri
 </form>`
 }
 
-function renderCreatedPage(name: string, plaintextToken: string, _csrfToken: string): string {
+function renderCreatedPage(name: string, plaintextToken: string): string {
   return `<h1>Tenant '${escapeHtml(name)}' created</h1>
 <div class="warn">
   <strong>Save this token now.</strong> It is not stored in plaintext and cannot be retrieved later. If you lose it, delete the tenant and create a new one.
