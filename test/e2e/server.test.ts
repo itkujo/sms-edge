@@ -6,23 +6,30 @@ import type { AddressInfo } from 'node:net'
 import { createSmsEdgeServer } from '../../src/server.js'
 import { openJsonStore } from '../../src/tenants/store.js'
 import { createAuditLogger } from '../../src/audit/logger.js'
-import type { SmsClient } from '@itkujo/sms-core'
+import { VERSION } from '../../src/version.js'
+import type { SmsClient, SendInput } from '@itkujo/sms-core'
 
 const ADMIN_PASSWORD = 'super-long-test-admin-password'
 
 let dir: string
 let url: string
 let close: () => Promise<void>
+let lastSent: SendInput | null
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'sms-edge-e2e-'))
   const store = await openJsonStore(join(dir, 'tenants.json'))
+  // Silence audit output during e2e; per-event correctness is unit-tested.
   const audit = createAuditLogger({ write: () => {} })
+  lastSent = null
   const client: SmsClient = {
-    send: async () => ({ ok: true, messageId: 'real-msg', deviceId: 'real-dev', state: 'Pending' }),
+    send: async (input: SendInput) => {
+      lastSent = input
+      return { ok: true, messageId: 'real-msg', deviceId: 'real-dev', state: 'Pending' }
+    },
     getStatus: async () => ({ ok: false, error: { type: 'Network', cause: new Error() } }),
   } as unknown as SmsClient
-  const server = createSmsEdgeServer({ store, client, audit, adminPassword: ADMIN_PASSWORD, version: '0.1.0' })
+  const server = createSmsEdgeServer({ store, client, audit, adminPassword: ADMIN_PASSWORD, version: VERSION })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
   close = () => new Promise<void>((resolve) => server.close(() => resolve()))
@@ -65,6 +72,13 @@ describe('e2e: full admin + sms flow', () => {
     expect(sendRes.status).toBe(200)
     const sendBody = await sendRes.json()
     expect(sendBody).toEqual({ ok: true, messageId: 'real-msg', deviceId: 'real-dev', state: 'Pending' })
+
+    // Verify the fake was actually invoked with the expected input (catches
+    // any future bug where the server short-circuits and synthesizes a
+    // success response without calling the client).
+    expect(lastSent).not.toBeNull()
+    expect(lastSent!.to).toBe('+12125551234')
+    expect(lastSent!.type).toBe('SignIn')
   })
 
   it('create -> delete -> token no longer works', async () => {
@@ -78,7 +92,8 @@ describe('e2e: full admin + sms flow', () => {
     })
     const token = (await createRes.text()).match(/<code class="token">([^<]+)<\/code>/)![1]!
 
-    // Need a fresh CSRF for the delete (same session fingerprint, same token).
+    // CSRF is HMAC(adminPassword, authHeader), so it's stable across
+    // requests in the same admin session -- reuse the list-page token.
     const delRes = await fetch(`${url}/admin/tenants/acme/delete`, {
       method: 'POST',
       headers: { authorization: authHeader, 'content-type': 'application/x-www-form-urlencoded' },

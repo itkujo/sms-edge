@@ -3,8 +3,9 @@ import { loadConfig } from './config.js'
 import { openJsonStore } from './tenants/store.js'
 import { createAuditLogger } from './audit/logger.js'
 import { createSmsEdgeServer } from './server.js'
+import { VERSION } from './version.js'
 
-export const VERSION = '0.1.0'
+export { VERSION }
 
 async function main(): Promise<void> {
   const config = loadConfig()
