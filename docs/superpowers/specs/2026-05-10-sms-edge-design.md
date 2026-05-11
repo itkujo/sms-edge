@@ -62,6 +62,7 @@ sms-edge/
 ├── tsup.config.ts        # builds ESM to dist/
 ├── vitest.config.ts
 ├── Dockerfile            # multi-stage alpine + Node 20
+├── docker-compose.yml    # Coolify deployment manifest (pulls image from GHCR)
 ├── .dockerignore
 ├── .gitignore            # dist/, node_modules/, data/, .env
 ├── .gitattributes
@@ -658,34 +659,99 @@ jobs:
 
 Multi-arch matters because the bridge may run on x86 (Coolify VM), arm64 (dev machine, Pi), or both.
 
-### Operator runbook -- Coolify
+### Compose file -- the canonical deploy artifact
 
-1. New resource -> Docker image -> `ghcr.io/itkujo/sms-edge:v0.1.0`
-2. Set env vars (`ADMIN_PASSWORD`, `SMSGATE_USER`, `SMSGATE_PASS`, `SMSGATE_BASE_URL`)
-3. Mount persistent volume at `/data`
-4. Expose port `3000`
-5. Set domain (e.g. `sms-edge.relentnet.dev`); Coolify/Traefik provisions cert
-6. Deploy
-7. Visit `https://sms-edge.relentnet.dev/admin`, log in as `admin` + `ADMIN_PASSWORD`
-8. Add first tenant; copy the one-time token
-9. In Logto admin: configure HTTP SMS connector with URL `https://sms-edge.relentnet.dev/sms` and header `X-Auth: <token>`
-10. In Logto: send a test SMS
+`docker-compose.yml` ships at the repo root. It is the single source of truth for how the bridge runs in production. Coolify, plain Docker, and any other compose-aware host all use the same file.
 
-### Operator runbook -- generic Docker
+```yaml
+# docker-compose.yml
+services:
+  sms-edge:
+    image: ghcr.io/itkujo/sms-edge:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      # Required secrets -- deployment fails if not set (Coolify highlights these in red).
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?}
+      - SMSGATE_USER=${SMSGATE_USER:?}
+      - SMSGATE_PASS=${SMSGATE_PASS:?}
+      # Required with defaults -- prefilled but editable in Coolify UI.
+      - SMSGATE_BASE_URL=${SMSGATE_BASE_URL:?https://sms.relentnet.dev}
+      - LOG_LEVEL=${LOG_LEVEL:?info}
+      # Hardcoded -- not surfaced in UI.
+      - PORT=3000
+      - TENANTS_PATH=/data/tenants.json
+      # Coolify magic env: assigning a domain to this service in the UI sets
+      # SERVICE_FQDN_SMS-EDGE_3000 and provisions a Traefik route + cert.
+      # The bridge itself ignores it; the value being present is what Coolify
+      # uses to wire up routing. (Identifier uses hyphens to match the service
+      # name; see https://coolify.io/docs/knowledge-base/docker/compose#coolify-s-magic-environment-variables)
+      - SERVICE_FQDN_SMS-EDGE_3000
+    volumes:
+      - sms-edge-data:/data
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
-```bash
-docker run -d --name sms-edge \
-  --restart unless-stopped \
-  -p 3000:3000 \
-  -v sms-edge-data:/data \
-  -e ADMIN_PASSWORD='<long random>' \
-  -e SMSGATE_USER='-HP3NQ' \
-  -e SMSGATE_PASS='...' \
-  -e SMSGATE_BASE_URL='https://sms.relentnet.dev' \
-  ghcr.io/itkujo/sms-edge:v0.1.0
+volumes:
+  sms-edge-data:
 ```
 
-Then put a reverse proxy (Caddy, Traefik, nginx) in front for TLS. README includes a sample Caddyfile.
+Key choices in the compose file:
+
+- **`image:` not `build:`** -- Coolify pulls the prebuilt image from GHCR rather than building each deploy. CI builds the image once on tag push (`v0.1.0`) and reuses the same image bytes across every host. Faster deploys, deterministic.
+- **`IMAGE_TAG` env override** -- defaults to `latest` for casual deploys; Coolify operators set `IMAGE_TAG=v0.1.0` (or whatever) in the Coolify UI for pinned, reproducible deploys.
+- **Required-variable syntax (`${VAR:?}` and `${VAR:?default}`)** -- Coolify recognizes Docker Compose's standard required-variable syntax and refuses to deploy until missing values are filled in. Variables marked required appear at the top of Coolify's env-var UI with a red border when empty; required-with-default variables are prefilled but editable. This is more operator-friendly than letting the container boot, fail in `loadConfig`, and crash-loop. See [Coolify docs on required env vars](https://coolify.io/docs/knowledge-base/docker/compose#required-environment-variables).
+- **The bridge's `loadConfig` is still the source of truth.** It re-validates every var at runtime. Compose's `${VAR:?}` is a pre-flight check; `loadConfig` is the safety net for hosts that don't honor it (raw docker-compose without Coolify).
+- **Healthcheck uses Node + native `fetch`** -- alpine doesn't ship curl by default, and Node 20 has `fetch` global. Avoids bloating the image. Coolify uses this same healthcheck for its in-UI status indicator.
+- **`SERVICE_FQDN_SMS-EDGE_3000`** is Coolify's magic env var. The naming convention is `SERVICE_FQDN_<identifier>_<port>` where the identifier uses **hyphens, not underscores**, to match the service name. (Underscores in the identifier are not supported when including a port -- a Coolify-documented limitation.) The bridge itself never reads this env var; Coolify uses its mere presence in the compose file to know "assign a domain to this service in the UI and wire it through Traefik." On a non-Coolify host the variable is simply unset and Docker silently drops it from the container environment.
+- **Named volume `sms-edge-data`** persists `/data/tenants.json` across container restarts. Coolify creates this volume automatically the first time you deploy; on a plain Docker host, `docker compose up` creates it.
+
+### Operator runbook -- Coolify (compose deploy)
+
+1. **Build the image once.** Push a `v*` tag to the `sms-edge` repo on GitHub. The `release.yml` workflow builds + pushes `ghcr.io/itkujo/sms-edge:v0.1.0` and `:latest` (multi-arch).
+2. **In Coolify:** Create a new resource -> "Docker Compose" -> point at the `sms-edge` repo (or paste the compose file contents). Coolify reads `docker-compose.yml` from the repo root.
+3. **Configure env vars in the Coolify UI.** Coolify auto-detects every variable referenced in the compose file and lists them with red borders for the required ones. Set:
+   - `ADMIN_PASSWORD` (required) -- generate with `openssl rand -base64 24`
+   - `SMSGATE_USER` (required) -- `-HP3NQ`
+   - `SMSGATE_PASS` (required) -- from your password manager
+   - `SMSGATE_BASE_URL` (required, prefilled `https://sms.relentnet.dev`) -- leave as-is
+   - `LOG_LEVEL` (required, prefilled `info`) -- leave as-is, or set to `warn`/`error`
+   - `IMAGE_TAG` (optional) -- `v0.1.0` for pinned deploys, omit for `latest`
+   - `SERVICE_FQDN_SMS-EDGE_3000` -- `sms-edge.relentnet.dev` (Coolify-managed Traefik will issue a cert and route the domain to port 3000). Note: hyphen in the env-var name to match the service identifier.
+4. **Coolify needs to pull from a private GHCR image.** Add `ghcr.io` as a registry in Coolify's settings with a GitHub PAT (scope: `read:packages`). One-time setup per Coolify install. Coolify documents this flow.
+5. **Deploy.** Coolify clones the repo, reads `docker-compose.yml`, fills in env vars, runs `docker compose pull && docker compose up -d`. Healthcheck flips to green after ~5s.
+6. **Verify** by curling `https://sms-edge.relentnet.dev/health` -- should return `{"ok":true, "version":"0.1.0", ...}`.
+7. **Visit `https://sms-edge.relentnet.dev/admin`**, log in as `admin` + `ADMIN_PASSWORD`.
+8. **Add first tenant**, copy the one-time token.
+9. **In Logto admin:** configure HTTP SMS connector with URL `https://sms-edge.relentnet.dev/sms` and header `X-Auth: <token>`.
+10. **In Logto:** trigger a test SMS via the connector test button or a real sign-in flow.
+
+### Operator runbook -- generic Docker host (compose)
+
+The same `docker-compose.yml` works on any Docker-compose-aware host. Set the required env vars in a `.env` file next to the compose file, then bring up:
+
+```bash
+git clone git@github.com:itkujo/sms-edge.git
+cd sms-edge
+cat > .env <<EOF
+IMAGE_TAG=v0.1.0
+ADMIN_PASSWORD=$(openssl rand -base64 24)
+SMSGATE_USER=-HP3NQ
+SMSGATE_PASS=<from-password-manager>
+EOF
+docker compose pull
+docker compose up -d
+docker compose logs -f sms-edge   # confirm "listening on :3000"
+```
+
+Then put a reverse proxy (Caddy, Traefik, nginx) in front of `localhost:3000` to terminate TLS. README ships with a sample Caddyfile.
+
+To deploy a different tag: edit `IMAGE_TAG` in `.env`, `docker compose pull && docker compose up -d`. To remove the bridge entirely: `docker compose down -v` (the `-v` also drops the tenants volume -- omit if you want to keep tenants for a future redeploy).
 
 ### Versioning
 
@@ -741,7 +807,8 @@ The bridge is "done" for v0.1.0 when:
 6. Dockerfile builds locally without error.
 7. Multi-arch CI build on `v*` tag succeeds; image pushed to `ghcr.io/itkujo/sms-edge`.
 8. **Live integration:**
-   - Bridge deployed to Coolify at `sms-edge.relentnet.dev`.
+   - `docker-compose.yml` deploys to Coolify (via the compose flow, pulling `ghcr.io/itkujo/sms-edge:v0.1.0`) at `sms-edge.relentnet.dev`.
+   - Healthcheck reports healthy in the Coolify UI; `GET /health` returns `200`.
    - First tenant created via admin GUI.
    - `curl -H "X-Auth: <token>" -d '...' https://sms-edge.relentnet.dev/sms` triggers a real SMS.
    - A Logto instance configured against the bridge sends a real SMS during a sign-in flow.
