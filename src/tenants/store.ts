@@ -12,9 +12,13 @@ export interface Tenant {
 }
 
 export interface TenantStore {
-  list(): Promise<Tenant[]>
+  /** Returns a snapshot of all tenants. Mutating individual entries is a type error. */
+  list(): Promise<readonly Readonly<Tenant>[]>
+  /** Adds a tenant. Throws if `name` already exists. Persists to disk before committing in memory. */
   add(name: string, tokenHash: string): Promise<void>
+  /** Removes a tenant by name. Returns true if it existed, false otherwise. Invalidates cache entries. */
   remove(name: string): Promise<boolean>
+  /** Iterates ALL tenants for timing-safety. Caches by SHA256(token) for 5 minutes. */
   findByToken(presentedToken: string): Promise<Tenant | null>
 }
 
@@ -105,7 +109,7 @@ class JsonStore implements TenantStore {
     private state: FileShape,
   ) {}
 
-  async list(): Promise<Tenant[]> {
+  async list(): Promise<readonly Readonly<Tenant>[]> {
     return [...this.state.tenants]
   }
 
@@ -114,24 +118,34 @@ class JsonStore implements TenantStore {
       if (this.state.tenants.some((t) => t.name === name)) {
         throw new Error(`tenant '${name}' already exists`)
       }
-      this.state.tenants.push({ name, tokenHash, createdAt: new Date().toISOString() })
-      await atomicWrite(this.filePath, JSON.stringify(this.state, null, 2))
+      // Build the next state in a local, write to disk, THEN commit in memory.
+      // If atomicWrite throws, in-memory state still matches disk.
+      const next: FileShape = {
+        version: FILE_VERSION,
+        tenants: [
+          ...this.state.tenants,
+          { name, tokenHash, createdAt: new Date().toISOString() },
+        ],
+      }
+      await atomicWrite(this.filePath, JSON.stringify(next, null, 2))
+      this.state = next
     })
   }
 
   async remove(name: string): Promise<boolean> {
     return this.serializeWrite(async () => {
-      const before = this.state.tenants.length
-      this.state.tenants = this.state.tenants.filter((t) => t.name !== name)
-      const removed = this.state.tenants.length !== before
-      if (removed) {
-        await atomicWrite(this.filePath, JSON.stringify(this.state, null, 2))
-        // Invalidate cache entries for this tenant.
-        for (const [key, val] of this.tokenCache) {
-          if (val.tenantName === name) this.tokenCache.delete(key)
-        }
+      const nextTenants = this.state.tenants.filter((t) => t.name !== name)
+      const removed = nextTenants.length !== this.state.tenants.length
+      if (!removed) return false
+      // Same write-then-commit ordering as `add`.
+      const next: FileShape = { version: FILE_VERSION, tenants: nextTenants }
+      await atomicWrite(this.filePath, JSON.stringify(next, null, 2))
+      this.state = next
+      // Invalidate cache entries for this tenant.
+      for (const [key, val] of this.tokenCache) {
+        if (val.tenantName === name) this.tokenCache.delete(key)
       }
-      return removed
+      return true
     })
   }
 

@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtemp, rm, readFile, writeFile, chmod } from 'node:fs/promises'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openJsonStore, type TenantStore } from './store.js'
@@ -182,11 +182,93 @@ describe('TenantStore.findByToken', () => {
     expect(secondMs).toBeLessThan(20)
   })
 
-  it('removes a tenant invalidates its cache entry', async () => {
+  it('removing a tenant invalidates its cache entry', async () => {
     const hash = await hashToken('rm-token')
     await store.add('acme', hash)
     await store.findByToken('rm-token') // prime the cache
     await store.remove('acme')
     expect(await store.findByToken('rm-token')).toBeNull()
+  })
+})
+
+describe('TenantStore failure recovery', () => {
+  it('keeps in-memory state in sync with disk when a write fails', async () => {
+    // Open a normal store, add one tenant, then force the next write to fail
+    // by making the directory unwritable. The failed add must not leave the
+    // bad tenant in memory.
+    store = await openJsonStore(storePath)
+    const goodHash = await hashToken('good-token')
+    await store.add('first', goodHash)
+
+    // Make the directory read-only so atomicWrite's tmp-file write fails.
+    const { chmod, stat } = await import('node:fs/promises')
+    await chmod(dir, 0o500)
+    try {
+      const badHash = await hashToken('bad-token')
+      await expect(store.add('second', badHash)).rejects.toThrow()
+    } finally {
+      await chmod(dir, 0o700)
+    }
+
+    // In-memory state must reflect disk (one tenant only).
+    const list = await store.list()
+    expect(list.map((t) => t.name)).toEqual(['first'])
+    const onDisk = JSON.parse(await readFile(storePath, 'utf8'))
+    expect(onDisk.tenants.map((t: { name: string }) => t.name)).toEqual(['first'])
+
+    // Subsequent writes still work -- the lock did not poison the chain.
+    const recoveryHash = await hashToken('recovery-token')
+    await store.add('third', recoveryHash)
+    expect((await store.list()).map((t) => t.name).sort()).toEqual(['first', 'third'])
+    // Silence the unused 'stat' import in case lint ever cares.
+    void stat
+  })
+})
+
+describe('TenantStore cache TTL', () => {
+  // Note: scrypt itself ignores fake timers because it runs on a libuv thread,
+  // so we still pay the ~100ms for the priming call; only Date.now() is mocked
+  // and that is what TTL eviction checks against.
+  it('evicts cache entries after TOKEN_CACHE_TTL_MS elapses', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['Date'] })
+    try {
+      store = await openJsonStore(storePath)
+      const hash = await hashToken('ttl-token')
+      await store.add('acme', hash)
+
+      // Prime cache.
+      await store.findByToken('ttl-token')
+
+      // Advance past TTL.
+      vi.setSystemTime(new Date(Date.now() + 5 * 60 * 1000 + 1))
+
+      // Cache should be evicted -- next lookup runs scrypt again.
+      const t0 = Date.now()
+      const found = await store.findByToken('ttl-token')
+      const ms = Date.now() - t0
+      expect(found?.name).toBe('acme')
+      // If the cache had served this, ms would be ~0; an actual scrypt verify
+      // takes >50ms. Use a conservative threshold.
+      expect(ms).toBeGreaterThan(30)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('TenantStore concurrent ordering', () => {
+  it('serializes interleaved add and remove via the write lock', async () => {
+    store = await openJsonStore(storePath)
+    const hash = await hashToken('order-token')
+    // Both queued on the same lock chain. add runs first, then remove,
+    // so end state is empty.
+    const [, removed] = await Promise.all([
+      store.add('acme', hash),
+      store.remove('acme'),
+    ])
+    expect(removed).toBe(true)
+    expect(await store.list()).toEqual([])
+    const onDisk = JSON.parse(await readFile(storePath, 'utf8'))
+    expect(onDisk.tenants).toEqual([])
   })
 })
