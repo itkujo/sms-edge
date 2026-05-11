@@ -1,5 +1,6 @@
 import type { SmsClient, SendInput, SendResult, SmsError } from '@itkujo/sms-core'
 import type { AuditLogger } from '../audit/logger.js'
+import { transportError } from '../errors.js'
 
 /** Dependencies for the SMS data-plane handler. */
 export interface SmsRouteDeps {
@@ -117,7 +118,7 @@ export async function handleSms(req: SmsRouteRequest, deps: SmsRouteDeps): Promi
 
   const validation = validateBody(req.body)
   if (!validation.ok) {
-    const res = jsonResponse(400, { ok: false, error: { type: 'InvalidRequest', reason: validation.reason } })
+    const res = jsonResponse(400, transportError('InvalidRequest', validation.reason))
     deps.audit.emitRequestCompleted({ status: res.status, durationMs: Date.now() - startedAt })
     return res
   }

@@ -80,6 +80,8 @@ describe('POST /sms', () => {
         body: JSON.stringify({ to: '+12125551234', type: 'SignIn', payload: { code: '1' } }),
       })
       expect(res.status).toBe(401)
+      const body = await res.json() as { error: { type: string } }
+      expect(body.error.type).toBe('Unauthorized')
     } finally { await close() }
   })
 
@@ -92,6 +94,8 @@ describe('POST /sms', () => {
         body: JSON.stringify({ to: '+12125551234', type: 'SignIn', payload: { code: '1' } }),
       })
       expect(res.status).toBe(401)
+      const body = await res.json() as { error: { type: string } }
+      expect(body.error.type).toBe('Unauthorized')
     } finally { await close() }
   })
 
@@ -121,6 +125,8 @@ describe('POST /sms', () => {
         body: JSON.stringify({ to: '+12125551234', type: 'SignIn', payload: { text: big } }),
       })
       expect(res.status).toBe(413)
+      const body = await res.json() as { error: { type: string } }
+      expect(body.error.type).toBe('PayloadTooLarge')
     } finally { await close() }
   })
 
@@ -133,6 +139,9 @@ describe('POST /sms', () => {
         body: '{not json',
       })
       expect(res.status).toBe(400)
+      const body = await res.json() as { ok: boolean; error: { type: string } }
+      expect(body.ok).toBe(false)
+      expect(body.error.type).toBe('InvalidRequest')
     } finally { await close() }
   })
 
@@ -180,5 +189,58 @@ describe('unknown routes', () => {
       const res = await fetch(`${url}/some/path`)
       expect(res.status).toBe(404)
     } finally { await close() }
+  })
+
+  it('returns 404 with InternalError-free wire shape on the unknown route', async () => {
+    const { url, close } = await bootServer()
+    try {
+      const res = await fetch(`${url}/some/path`)
+      const body = await res.json() as { ok: boolean; error: { type: string; reason: string } }
+      expect(body.ok).toBe(false)
+      expect(body.error.type).toBe('NotFound')
+    } finally { await close() }
+  })
+})
+
+describe('internal error fallthrough', () => {
+  // The outer .catch in createSmsEdgeServer is the safety net for any
+  // unexpected throw inside handleRequest. Force a throw by injecting an
+  // audit logger whose emitRequestReceived throws; the server must respond
+  // 500 with the InternalError envelope rather than hang the connection.
+  it('returns 500 InternalError when the request handler throws', async () => {
+    const storePath = join(dir, 'tenants.json')
+    const store = await openJsonStore(storePath)
+    const hash = await hashToken('test-token')
+    await store.add('acme', hash)
+    const throwingAudit = {
+      onAuditLog: () => {},
+      emitRequestReceived: () => {
+        throw new Error('audit emit blew up')
+      },
+      emitRequestCompleted: () => {},
+    }
+    const deps: ServerDeps = {
+      store,
+      client: fakeClient(),
+      audit: throwingAudit,
+      adminPassword: ADMIN_PASSWORD,
+      version: '0.1.0',
+    }
+    const server = createSmsEdgeServer(deps)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const port = (server.address() as AddressInfo).port
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/sms`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-auth': 'test-token' },
+        body: JSON.stringify({ to: '+12125551234', type: 'SignIn', payload: { code: '1' } }),
+      })
+      expect(res.status).toBe(500)
+      const body = await res.json() as { ok: boolean; error: { type: string } }
+      expect(body.ok).toBe(false)
+      expect(body.error.type).toBe('InternalError')
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
   })
 })
