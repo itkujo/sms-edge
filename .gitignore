@@ -1,0 +1,10 @@
+node_modules
+dist
+data
+.env
+.env.local
+*.log
+coverage
+.vitest-cache
+.tsbuildinfo
+.DS_Store
