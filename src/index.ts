@@ -28,6 +28,9 @@ async function main(): Promise<void> {
     version: VERSION,
   })
 
+  // Read tenant count before starting to listen so the boot log line is
+  // emitted before any request can possibly be accepted.
+  const tenantCount = (await store.list()).length
   await new Promise<void>((resolve) => server.listen(config.port, '0.0.0.0', resolve))
   // eslint-disable-next-line no-console
   console.log(JSON.stringify({
@@ -36,10 +39,15 @@ async function main(): Promise<void> {
     event: 'edge.boot.listening',
     port: config.port,
     version: VERSION,
-    tenants: (await store.list()).length,
+    tenants: tenantCount,
   }))
 
+  let shuttingDown = false
   const shutdown = async (signal: string): Promise<void> => {
+    // Re-entry guard: SIGTERM+SIGINT or double Ctrl-C can fire this twice.
+    // Only the first invocation runs the close + timeout race.
+    if (shuttingDown) return
+    shuttingDown = true
     // eslint-disable-next-line no-console
     console.log(JSON.stringify({
       ts: new Date().toISOString(),
@@ -54,9 +62,18 @@ async function main(): Promise<void> {
     try {
       await Promise.race([closed, timeout])
       process.exit(0)
-    } catch {
+    } catch (err) {
+      // Distinguish the 10 s hard cap from a server.close error so log-based
+      // ops debugging is not ambiguous.
+      const message = err instanceof Error ? err.message : String(err)
+      const event = message === 'shutdown timeout' ? 'edge.shutdown.timeout' : 'edge.shutdown.error'
       // eslint-disable-next-line no-console
-      console.error(JSON.stringify({ ts: new Date().toISOString(), level: 'error', event: 'edge.shutdown.timeout' }))
+      console.error(JSON.stringify({
+        ts: new Date().toISOString(),
+        level: 'error',
+        event,
+        error: message,
+      }))
       process.exit(1)
     }
   }
