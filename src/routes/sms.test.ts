@@ -1,6 +1,6 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { handleSms, type SmsRouteDeps } from './sms.js'
-import type { SmsClient, SendInput, SendResult, AuditEvent } from '@itkujo/sms-core'
+import type { SmsClient, SendInput, SendResult } from '@itkujo/sms-core'
 
 function fakeClient(impl: (input: SendInput) => Promise<SendResult>): SmsClient {
   return { send: impl, getStatus: async () => ({ ok: false, error: { type: 'Network', cause: new Error('not used') } }) } as unknown as SmsClient
@@ -27,6 +27,9 @@ describe('handleSms', () => {
     expect(res.status).toBe(400)
     const body = JSON.parse(res.body)
     expect(body.ok).toBe(false)
+    // Body-shape errors are reported as InvalidRequest (distinct from the
+    // sms-core InvalidPhone variant) so consumers can distinguish.
+    expect(body.error.type).toBe('InvalidRequest')
     expect(body.error.reason).toMatch(/JSON object/)
   })
 
@@ -118,6 +121,41 @@ describe('handleSms', () => {
       peerIp: '203.0.113.5',
     }, deps)
     expect(res.status).toBe(status)
+  })
+
+  it('serializes Network.cause safely (does not crash on circular references)', async () => {
+    // Construct a circular cause -- realistic for fetch/undici errors that
+    // attach the request, which references the response, which references...
+    const circular: { self?: unknown } = {}
+    circular.self = circular
+    const deps = baseDeps({
+      client: fakeClient(async () => ({ ok: false, error: { type: 'Network', cause: circular } })),
+    })
+    const res = await handleSms({
+      body: { to: '+12125551234', type: 'SignIn', payload: { code: '1' } },
+      peerIp: '203.0.113.5',
+    }, deps)
+    expect(res.status).toBe(503)
+    const parsed = JSON.parse(res.body)
+    expect(parsed.ok).toBe(false)
+    expect(parsed.error.type).toBe('Network')
+    // The cause is coerced to a string via String(cause), so the wire payload
+    // is always JSON-serializable.
+    expect(typeof parsed.error.reason).toBe('string')
+  })
+
+  it('emits edge.request.completed even when the body cannot be parsed', async () => {
+    const completed: Array<{ status: number; durationMs: number }> = []
+    const deps = baseDeps({
+      audit: {
+        onAuditLog: () => {},
+        emitRequestReceived: () => {},
+        emitRequestCompleted: (f) => { completed.push(f) },
+      },
+    })
+    await handleSms({ body: 'not an object', peerIp: '203.0.113.5' }, deps)
+    expect(completed).toHaveLength(1)
+    expect(completed[0]?.status).toBe(400)
   })
 
   it('calls emitRequestCompleted with status + durationMs', async () => {
