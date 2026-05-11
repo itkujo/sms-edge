@@ -102,7 +102,12 @@ describe('withRequestContext', () => {
         logger.emitRequestReceived({ method: 'POST', path: '/sms' })
       }),
     ])
-    const tenants = logged.map((l) => JSON.parse(l).tenant).sort()
-    expect(tenants).toEqual(['acme', 'beta'])
+    // Assert paired (tenant, reqId) so a context-leak where one emit picks
+    // up the OTHER request's reqId would fail, not pass.
+    const pairs = logged
+      .map((l) => JSON.parse(l))
+      .map((p) => [p.tenant, p.reqId])
+      .sort()
+    expect(pairs).toEqual([['acme', 'a'], ['beta', 'b']])
   })
 })
