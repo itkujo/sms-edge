@@ -3,13 +3,14 @@ services:
     image: ghcr.io/itkujo/sms-edge:${IMAGE_TAG:-latest}
     restart: unless-stopped
     environment:
-      # Required secrets -- deployment fails if not set.
+      # Required secrets -- ${VAR:?} fails fast if unset at compose time.
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:?}
       - SMSGATE_USER=${SMSGATE_USER:?}
       - SMSGATE_PASS=${SMSGATE_PASS:?}
-      # Required with defaults -- prefilled but editable in Coolify UI.
-      - SMSGATE_BASE_URL=${SMSGATE_BASE_URL:?https://sms.relentnet.dev}
-      - LOG_LEVEL=${LOG_LEVEL:?info}
+      # Required with defaults -- ${VAR:-default} substitutes the default if
+      # unset. Coolify also surfaces these as editable fields in its UI.
+      - SMSGATE_BASE_URL=${SMSGATE_BASE_URL:-https://sms.relentnet.dev}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
       # Hardcoded -- not surfaced.
       - PORT=3000
       - TENANTS_PATH=/data/tenants.json
@@ -25,7 +26,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 5s
+      start_period: 10s
 
 volumes:
   sms-edge-data:

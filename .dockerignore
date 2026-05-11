@@ -9,3 +9,7 @@ data
 test
 docs
 README.md
+coverage
+*.tsbuildinfo
+.vscode
+.idea
