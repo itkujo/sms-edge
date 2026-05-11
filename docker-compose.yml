@@ -1,0 +1,31 @@
+services:
+  sms-edge:
+    image: ghcr.io/itkujo/sms-edge:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      # Required secrets -- deployment fails if not set.
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?}
+      - SMSGATE_USER=${SMSGATE_USER:?}
+      - SMSGATE_PASS=${SMSGATE_PASS:?}
+      # Required with defaults -- prefilled but editable in Coolify UI.
+      - SMSGATE_BASE_URL=${SMSGATE_BASE_URL:?https://sms.relentnet.dev}
+      - LOG_LEVEL=${LOG_LEVEL:?info}
+      # Hardcoded -- not surfaced.
+      - PORT=3000
+      - TENANTS_PATH=/data/tenants.json
+      # Coolify magic env: assigning a domain to this service sets
+      # SERVICE_FQDN_SMS-EDGE_3000 and provisions a Traefik route + cert.
+      - SERVICE_FQDN_SMS-EDGE_3000
+    volumes:
+      - sms-edge-data:/data
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  sms-edge-data:
