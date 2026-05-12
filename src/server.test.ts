@@ -243,6 +243,89 @@ describe('GET /admin', () => {
   })
 })
 
+describe('POST /gatewayapi/rest/mtsms (Logto GatewayAPI-compatible)', () => {
+  function basicAuth(token: string): string {
+    // GatewayAPI/Logto convention: token-as-username, empty password.
+    return 'Basic ' + Buffer.from(`${token}:`).toString('base64')
+  }
+
+  it('returns 401 when Authorization header is missing', async () => {
+    const { url, close } = await bootServer()
+    try {
+      const res = await fetch(`${url}/gatewayapi/rest/mtsms`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sender: 'X', message: 'hi', recipients: [{ msisdn: '+12125551234' }] }),
+      })
+      expect(res.status).toBe(401)
+      expect((await res.json() as { error: { type: string } }).error.type).toBe('Unauthorized')
+    } finally { await close() }
+  })
+
+  it('returns 401 when Authorization is not the Basic scheme', async () => {
+    const { url, close } = await bootServer()
+    try {
+      const res = await fetch(`${url}/gatewayapi/rest/mtsms`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer test-token' },
+        body: JSON.stringify({ sender: 'X', message: 'hi', recipients: [{ msisdn: '+12125551234' }] }),
+      })
+      expect(res.status).toBe(401)
+    } finally { await close() }
+  })
+
+  it('returns 401 when token is unknown', async () => {
+    const { url, close } = await bootServer()
+    try {
+      const res = await fetch(`${url}/gatewayapi/rest/mtsms`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: basicAuth('not-a-real-token') },
+        body: JSON.stringify({ sender: 'X', message: 'hi', recipients: [{ msisdn: '+12125551234' }] }),
+      })
+      expect(res.status).toBe(401)
+    } finally { await close() }
+  })
+
+  it('returns 200 with a GatewayAPI-shaped success body when token + body valid', async () => {
+    const { url, close } = await bootServer()
+    try {
+      const res = await fetch(`${url}/gatewayapi/rest/mtsms`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: basicAuth('test-token') },
+        body: JSON.stringify({ sender: 'Logto', message: 'Your code is 123456.', recipients: [{ msisdn: '+12125551234' }] }),
+      })
+      expect(res.status).toBe(200)
+      const body = await res.json() as { ids: number[]; usage: unknown }
+      expect(Array.isArray(body.ids)).toBe(true)
+      expect(body.ids).toHaveLength(1)
+      expect(body.usage).toBeDefined()
+      // sms-core was invoked with type=Generic and the rendered message text.
+      expect(lastSent).toMatchObject({
+        to: '+12125551234',
+        type: 'Generic',
+        payload: { text: 'Your code is 123456.' },
+      })
+    } finally { await close() }
+  })
+
+  it('rejects multi-recipient payload with 400 to keep audit + rate-limit per-call', async () => {
+    const { url, close } = await bootServer()
+    try {
+      const res = await fetch(`${url}/gatewayapi/rest/mtsms`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: basicAuth('test-token') },
+        body: JSON.stringify({
+          sender: 'Logto',
+          message: 'hi',
+          recipients: [{ msisdn: '+12125551234' }, { msisdn: '+15557654321' }],
+        }),
+      })
+      expect(res.status).toBe(400)
+      expect((await res.json() as { error: { reason: string } }).error.reason).toMatch(/single recipient/i)
+    } finally { await close() }
+  })
+})
+
 describe('unknown routes', () => {
   it('returns 404 for unknown paths', async () => {
     const { url, close } = await bootServer()

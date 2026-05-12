@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto'
 import type { SmsClient } from '@itkujo/sms-core'
 import { handleSms } from './routes/sms.js'
 import { handleAdmin } from './routes/admin.js'
+import { handleGatewayApi } from './routes/gatewayapi.js'
 import { renderHealth } from './routes/health.js'
 import { type AuditLogger, withRequestContext } from './audit/logger.js'
 import type { TenantStore } from './tenants/store.js'
@@ -146,6 +147,58 @@ async function handleRequest(
     return
   }
 
+  // POST /gatewayapi/rest/mtsms is a GatewayAPI-compatible endpoint so Logto's
+  // bundled "GatewayAPI SMS" connector (the only configurable-endpoint SMS
+  // connector shipped in Logto v1.22) can talk to us with zero plugin work.
+  // Auth is HTTP Basic with the tenant token as the username and an empty
+  // password -- this is exactly what Logto's GatewayAPI connector sends.
+  if (method === 'POST' && path === '/gatewayapi/rest/mtsms') {
+    const presentedToken = extractTokenFromGatewayApiBasicAuth(headers['authorization'])
+    if (!presentedToken) {
+      writeJson(res, 401, transportError('Unauthorized', 'missing or malformed Authorization header (expected `Basic base64(<token>:)`)'))
+      return
+    }
+    const tenant = await deps.store.findByToken(presentedToken)
+    if (!tenant) {
+      writeJson(res, 401, transportError('Unauthorized', 'invalid tenant token'))
+      return
+    }
+
+    const reqId = 'req_' + randomBytes(8).toString('hex')
+    const peerIp = req.socket.remoteAddress ?? 'unknown'
+
+    await withRequestContext({ tenant: tenant.name, reqId }, async () => {
+      const t0 = Date.now()
+      const raw = await readBody(req, res)
+      if (raw === undefined) return // 413 already written
+
+      let body: unknown = null
+      try {
+        body = raw === '' ? null : JSON.parse(raw)
+      } catch {
+        deps.audit.emitRequestReceived({ method, path })
+        writeJson(res, 400, transportError('InvalidRequest', 'body is not valid JSON'))
+        deps.audit.emitRequestCompleted({ status: 400, durationMs: Date.now() - t0 })
+        return
+      }
+
+      const obj = body as Record<string, unknown> | null
+      const firstRecipient = Array.isArray(obj?.['recipients']) ? obj?.['recipients']?.[0] : undefined
+      const inputTo = typeof (firstRecipient as Record<string, unknown> | undefined)?.['msisdn'] === 'string'
+        ? ((firstRecipient as Record<string, unknown>)['msisdn'] as string)
+        : undefined
+      deps.audit.emitRequestReceived({
+        method, path,
+        ...(inputTo !== undefined && { to: inputTo }),
+        type: 'Generic',
+      })
+
+      const routeRes = await handleGatewayApi({ body, peerIp }, { client: deps.client, audit: deps.audit })
+      writeResponse(res, routeRes.status, routeRes.headers, routeRes.body)
+    })
+    return
+  }
+
   writeJson(res, 404, transportError('NotFound', 'no route'))
 }
 
@@ -172,6 +225,30 @@ function extractTenantToken(headers: Record<string, string>): string | undefined
   // Match `Bearer <token>` case-insensitively; otherwise treat the whole value as the token.
   const bearer = /^Bearer\s+(.+)$/i.exec(authz)
   return bearer ? bearer[1]!.trim() : authz.trim()
+}
+
+/** Extracts the tenant token from a Logto-GatewayAPI-style `Authorization:
+ * Basic base64(<token>:)` header. The Logto connector encodes the API token
+ * as the basic-auth username with an empty password, mirroring GatewayAPI's
+ * own convention. Returns undefined for any other shape so the caller can
+ * issue a 401. */
+function extractTokenFromGatewayApiBasicAuth(headerValue: string | undefined): string | undefined {
+  if (!headerValue) return undefined
+  if (!/^Basic\s+/i.test(headerValue)) return undefined
+  const b64 = headerValue.replace(/^Basic\s+/i, '').trim()
+  let decoded: string
+  try {
+    decoded = Buffer.from(b64, 'base64').toString('utf8')
+  } catch {
+    return undefined
+  }
+  // GatewayAPI convention: `<apiToken>:` -- empty password after the colon.
+  // We accept a non-empty password too (some clients put the token in either
+  // field) but the token MUST be non-empty.
+  const colonIdx = decoded.indexOf(':')
+  if (colonIdx === -1) return undefined
+  const user = decoded.slice(0, colonIdx)
+  return user.length > 0 ? user : undefined
 }
 
 /** Streams the request body into a string with a 16 KB cap.

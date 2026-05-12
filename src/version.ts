@@ -6,4 +6,4 @@
  * (top-level `main()` call that opens a tenant store and starts an HTTP
  * server). Bump in sync with `package.json` `version` field on each release.
  */
-export const VERSION = '0.1.1'
+export const VERSION = '0.1.2'

@@ -247,10 +247,13 @@ function renderCreatedPage(name: string, plaintextToken: string): string {
 </div>
 <p>Token:</p>
 <code class="token">${escapeHtml(plaintextToken)}</code>
-<p>Header to configure in your client. Either of these works:</p>
+<p>This token works with any of the routes below. Pick the one your client expects:</p>
+<p><strong>1. Native (<code>POST /sms</code>)</strong> &mdash; either header works:</p>
 <code class="token">X-Auth: ${escapeHtml(plaintextToken)}</code>
 <code class="token">Authorization: Bearer ${escapeHtml(plaintextToken)}</code>
-<p>Logto's <em>Send Message via HTTP</em> connector uses the <code>Authorization</code> form; paste the second line's value into the connector's <code>authorization</code> field.</p>
+<p><strong>2. Logto's <em>GatewayAPI SMS</em> connector (<code>POST /gatewayapi/rest/mtsms</code>)</strong> &mdash; paste this exact value into the connector's <em>API Token</em> field:</p>
+<code class="token">${escapeHtml(plaintextToken)}</code>
+<p>...with <em>Endpoint</em> set to <code>https://&lt;your-sms-edge-host&gt;/gatewayapi/rest/mtsms</code>. The <em>Sender</em> field is required by the Logto form but is ignored by sms-edge (SMSGate sends from the enrolled phone's number).</p>
 <p><a href="/admin/tenants">Back to tenants</a></p>`
 }
 
