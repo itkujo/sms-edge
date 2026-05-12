@@ -96,11 +96,15 @@ async function handleRequest(
     return
   }
 
-  // POST /sms uses X-Auth tenant token.
+  // POST /sms uses a tenant token, accepted in either header:
+  //   - `X-Auth: <token>` (sms-edge native convention)
+  //   - `Authorization: Bearer <token>` (Logto's connector-http-sms convention)
+  //   - `Authorization: <token>` (bare, for clients that don't add a scheme)
+  // X-Auth wins if both are present.
   if (method === 'POST' && path === '/sms') {
-    const presentedToken = headers['x-auth']
+    const presentedToken = extractTenantToken(headers)
     if (!presentedToken) {
-      writeJson(res, 401, transportError('Unauthorized', 'missing X-Auth header'))
+      writeJson(res, 401, transportError('Unauthorized', 'missing X-Auth or Authorization header'))
       return
     }
     const tenant = await deps.store.findByToken(presentedToken)
@@ -152,6 +156,22 @@ function normalizeHeaders(input: NodeJS.Dict<string | string[]>): Record<string,
     out[k.toLowerCase()] = Array.isArray(v) ? v.join(', ') : v
   }
   return out
+}
+
+/** Extracts the presented tenant token from either:
+ *   - `X-Auth: <token>` (sms-edge native), or
+ *   - `Authorization: Bearer <token>` / `Authorization: <token>` (Logto's
+ *     connector-http-sms hard-codes `Authorization`, with the value being
+ *     whatever the operator typed into the connector config).
+ * X-Auth takes precedence. Headers are pre-lowercased by `normalizeHeaders`. */
+function extractTenantToken(headers: Record<string, string>): string | undefined {
+  const xAuth = headers['x-auth']
+  if (xAuth) return xAuth
+  const authz = headers['authorization']
+  if (!authz) return undefined
+  // Match `Bearer <token>` case-insensitively; otherwise treat the whole value as the token.
+  const bearer = /^Bearer\s+(.+)$/i.exec(authz)
+  return bearer ? bearer[1]!.trim() : authz.trim()
 }
 
 /** Streams the request body into a string with a 16 KB cap.

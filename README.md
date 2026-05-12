@@ -5,7 +5,7 @@ HTTP bridge from Logto's `connector-http-sms` to our self-hosted SMSGate, using 
 ## Architecture
 
 - `POST /sms` accepts Logto's `connector-http-sms` envelope and forwards to SMSGate.
-- `GET /admin` (basic auth) manages per-tenant `X-Auth` tokens.
+- `GET /admin` (basic auth) manages per-tenant tokens. Clients present the token in either `X-Auth: <token>` or `Authorization: Bearer <token>` (Logto's `connector-http-sms` uses the latter; both are accepted).
 - `GET /health` returns liveness for orchestrator probes.
 - Each tenant gets its own random 256-bit token; tokens are stored hashed (scrypt) on disk in `/data/tenants.json`.
 
@@ -28,7 +28,7 @@ See `docs/superpowers/specs/2026-05-10-sms-edge-design.md` for the full design.
 6. Verify: `curl https://sms-edge.relentnet.dev/health` should return `{"ok":true,"version":"0.1.0","tenants":0,"uptimeSec":N}`.
 7. Visit `https://sms-edge.relentnet.dev/admin`, log in as `admin` + `ADMIN_PASSWORD`, add your first tenant.
 8. Copy the one-time token shown after creating the tenant. (You cannot retrieve it later.)
-9. In Logto admin: configure the HTTP SMS connector with URL `https://sms-edge.relentnet.dev/sms` and header `X-Auth: <token>`.
+9. In Logto admin: install/configure the **Send Message via HTTP** connector (`connector-http-sms`). Set `endpoint=https://sms-edge.relentnet.dev/sms` and `authorization=Bearer <token>`. (The same token also works as `X-Auth: <token>` for clients that don't use Logto's connector.)
 10. Trigger a test SMS from Logto.
 
 ## Deploy -- generic Docker host (compose)

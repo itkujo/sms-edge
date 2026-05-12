@@ -247,8 +247,10 @@ function renderCreatedPage(name: string, plaintextToken: string): string {
 </div>
 <p>Token:</p>
 <code class="token">${escapeHtml(plaintextToken)}</code>
-<p>X-Auth header to configure in Logto:</p>
+<p>Header to configure in your client. Either of these works:</p>
 <code class="token">X-Auth: ${escapeHtml(plaintextToken)}</code>
+<code class="token">Authorization: Bearer ${escapeHtml(plaintextToken)}</code>
+<p>Logto's <em>Send Message via HTTP</em> connector uses the <code>Authorization</code> form; paste the second line's value into the connector's <code>authorization</code> field.</p>
 <p><a href="/admin/tenants">Back to tenants</a></p>`
 }
 

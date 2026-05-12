@@ -115,6 +115,67 @@ describe('POST /sms', () => {
     } finally { await close() }
   })
 
+  // Logto's connector-http-sms sends the configured token in `Authorization`,
+  // not `X-Auth`. We accept either to support both Logto and any client that
+  // follows the X-Auth convention documented in our README.
+  it('accepts Authorization: Bearer <token> as an alternative to X-Auth', async () => {
+    const { url, close } = await bootServer()
+    try {
+      const res = await fetch(`${url}/sms`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer test-token' },
+        body: JSON.stringify({ to: '+12125551234', type: 'SignIn', payload: { code: '1' } }),
+      })
+      expect(res.status).toBe(200)
+      const body = await res.json() as { ok: boolean; messageId: string }
+      expect(body.ok).toBe(true)
+      expect(body.messageId).toBe('msg-1')
+    } finally { await close() }
+  })
+
+  it('accepts a bare Authorization: <token> (no Bearer prefix) for clients that send the raw token', async () => {
+    const { url, close } = await bootServer()
+    try {
+      const res = await fetch(`${url}/sms`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'test-token' },
+        body: JSON.stringify({ to: '+12125551234', type: 'SignIn', payload: { code: '1' } }),
+      })
+      expect(res.status).toBe(200)
+    } finally { await close() }
+  })
+
+  it('returns 401 when Authorization header carries an invalid token', async () => {
+    const { url, close } = await bootServer()
+    try {
+      const res = await fetch(`${url}/sms`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer not-a-real-token' },
+        body: JSON.stringify({ to: '+12125551234', type: 'SignIn', payload: { code: '1' } }),
+      })
+      expect(res.status).toBe(401)
+      const body = await res.json() as { error: { type: string } }
+      expect(body.error.type).toBe('Unauthorized')
+    } finally { await close() }
+  })
+
+  it('prefers X-Auth when both X-Auth and Authorization are present', async () => {
+    const { url, close } = await bootServer()
+    try {
+      const res = await fetch(`${url}/sms`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-auth': 'test-token',
+          authorization: 'Bearer wrong-token',
+        },
+        body: JSON.stringify({ to: '+12125551234', type: 'SignIn', payload: { code: '1' } }),
+      })
+      // X-Auth wins => valid token => 200, not the 401 the wrong Authorization would yield.
+      expect(res.status).toBe(200)
+    } finally { await close() }
+  })
+
   it('returns 413 when body exceeds 16 KB', async () => {
     const { url, close } = await bootServer()
     try {

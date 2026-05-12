@@ -1,6 +1,6 @@
 {
   "name": "@itkujo/sms-edge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "HTTP bridge from Logto's connector-http-sms to our self-hosted SMSGate, using @itkujo/sms-core.",
   "type": "module",
   "main": "./dist/index.js",
