@@ -52,6 +52,55 @@ describe('handleGatewayApi', () => {
     expect(captured!.ip).toBe('203.0.113.5')
   })
 
+  // GatewayAPI's docs define msisdn as "full international number without a
+  // leading +" (e.g. `15551234567` for US, `4512345678` for DK). Logto's
+  // connector encodes exactly that. sms-core requires E.164 with the +. The
+  // bridge normalises by prefixing + when it's missing.
+  it('prefixes + on msisdn that arrives in raw international format (Logto/GatewayAPI default)', async () => {
+    let captured: SendInput | undefined
+    const deps = baseDeps({
+      client: fakeClient(async (input) => {
+        captured = input
+        return { ok: true, messageId: 'msg-1', deviceId: 'dev-1', state: 'Pending' }
+      }),
+    })
+    await handleGatewayApi({
+      body: validBody({ recipients: [{ msisdn: '15551234567' }] }),
+      peerIp: '203.0.113.5',
+    }, deps)
+    expect(captured!.to).toBe('+15551234567')
+  })
+
+  it('accepts msisdn as an integer per the GatewayAPI spec (msisdn: integer|string)', async () => {
+    let captured: SendInput | undefined
+    const deps = baseDeps({
+      client: fakeClient(async (input) => {
+        captured = input
+        return { ok: true, messageId: 'msg-1', deviceId: 'dev-1', state: 'Pending' }
+      }),
+    })
+    await handleGatewayApi({
+      body: validBody({ recipients: [{ msisdn: 15551234567 }] }),
+      peerIp: '203.0.113.5',
+    }, deps)
+    expect(captured!.to).toBe('+15551234567')
+  })
+
+  it('preserves an explicit + when the caller already provided one', async () => {
+    let captured: SendInput | undefined
+    const deps = baseDeps({
+      client: fakeClient(async (input) => {
+        captured = input
+        return { ok: true, messageId: 'msg-1', deviceId: 'dev-1', state: 'Pending' }
+      }),
+    })
+    await handleGatewayApi({
+      body: validBody({ recipients: [{ msisdn: '+15551234567' }] }),
+      peerIp: '203.0.113.5',
+    }, deps)
+    expect(captured!.to).toBe('+15551234567')
+  })
+
   it('returns 400 when body is not a JSON object', async () => {
     const res = await handleGatewayApi({ body: 'not-an-object', peerIp: '203.0.113.5' }, baseDeps())
     expect(res.status).toBe(400)
@@ -65,7 +114,8 @@ describe('handleGatewayApi', () => {
     ['recipients not an array', { sender: 'X', message: 'hi', recipients: { msisdn: '+1' } }, /"recipients"/],
     ['recipients empty', { sender: 'X', message: 'hi', recipients: [] }, /"recipients"/],
     ['recipient missing msisdn', { sender: 'X', message: 'hi', recipients: [{}] }, /msisdn/],
-    ['msisdn not a string', { sender: 'X', message: 'hi', recipients: [{ msisdn: 12125551234 }] }, /msisdn/],
+    ['msisdn boolean', { sender: 'X', message: 'hi', recipients: [{ msisdn: true }] }, /msisdn/],
+    ['msisdn empty string', { sender: 'X', message: 'hi', recipients: [{ msisdn: '' }] }, /msisdn/],
   ])('returns 400 on %s', async (_label, body, pattern) => {
     const res = await handleGatewayApi({ body, peerIp: '203.0.113.5' }, baseDeps())
     expect(res.status).toBe(400)

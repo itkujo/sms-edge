@@ -35,6 +35,33 @@ interface ParsedBody {
   message: string
 }
 
+/** Normalises a GatewayAPI `msisdn` field into an E.164 phone string.
+ *
+ * GatewayAPI's spec defines `msisdn` as `integer | string` carrying the full
+ * international phone number WITHOUT a leading `+` (e.g. `15551234567` for
+ * US, `4512345678` for DK). Logto's connector forwards exactly that shape.
+ * sms-core, however, requires E.164 with the `+`. The bridge is the right
+ * place to translate -- sms-core stays strict, the bridge speaks its source
+ * format faithfully.
+ *
+ * Rules:
+ *  - integer input: stringified, then `+` prefixed.
+ *  - string input: trimmed; if it already starts with `+` it is returned as-is.
+ *    Otherwise `+` is prefixed.
+ *  - everything else (boolean, null, object, ...): returned as `undefined`
+ *    so the caller can issue a 400. */
+function normaliseMsisdn(raw: unknown): string | undefined {
+  if (typeof raw === 'number' && Number.isFinite(raw) && Number.isInteger(raw) && raw > 0) {
+    return '+' + raw.toString(10)
+  }
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim()
+    if (trimmed.length === 0) return undefined
+    return trimmed.startsWith('+') ? trimmed : '+' + trimmed
+  }
+  return undefined
+}
+
 function validateBody(body: unknown): { ok: true; parsed: ParsedBody } | { ok: false; reason: string } {
   if (!isObject(body)) return { ok: false, reason: 'body must be a JSON object' }
   if (!isNonEmptyString(body['message'])) return { ok: false, reason: 'field "message" must be a non-empty string' }
@@ -46,8 +73,11 @@ function validateBody(body: unknown): { ok: true; parsed: ParsedBody } | { ok: f
   if (recipients.length > 1) return { ok: false, reason: 'only a single recipient is supported per request' }
   const first = recipients[0]
   if (!isObject(first)) return { ok: false, reason: 'each recipient must be an object with an msisdn field' }
-  if (!isNonEmptyString(first['msisdn'])) return { ok: false, reason: 'recipient msisdn must be a non-empty string' }
-  return { ok: true, parsed: { msisdn: first['msisdn'], message: body['message'] } }
+  const normalised = normaliseMsisdn(first['msisdn'])
+  if (normalised === undefined) {
+    return { ok: false, reason: 'recipient msisdn must be a non-empty string or positive integer' }
+  }
+  return { ok: true, parsed: { msisdn: normalised, message: body['message'] } }
 }
 
 /** Maps a sms-core `SmsError` to an HTTP status. Mirrors the mapping used by
